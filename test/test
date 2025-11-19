@@ -1,0 +1,2 @@
+#skyflow test 
+go test -count=1  -v `ls *.go |grep -v '_test'` skyflow_test.go -test.run TestSkyFlow

@@ -1,1 +1,1 @@
-# skyflow_client
+# SkyFlow Client SDK
