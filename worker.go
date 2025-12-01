@@ -3,7 +3,6 @@ package skyflowclient
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"reflect"
@@ -266,7 +265,7 @@ func (wr *WorkerRepository) ScanStateMachinePath() error {
 			fname := fnamepart[0]
 			fext := fnamepart[1]
 			if fext == "json" {
-				content, err := ioutil.ReadFile(p)
+				content, err := os.ReadFile(p)
 				if err != nil {
 					return err
 				}
