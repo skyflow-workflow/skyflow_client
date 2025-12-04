@@ -1,6 +1,7 @@
 package skyflowclient
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,11 +11,29 @@ import (
 	"time"
 
 	"github.com/panjf2000/ants/v2"
+	v1 "github.com/skyflow-workflow/skyflow_backend/api/v1"
 )
+
+// ActivityFunction activity callback function
+type ActivityFunction func(ctx *Context) error
+
+// WorkerActivity Activity in worker
+type WorkerActivity struct {
+	Name     string           //  活动名称
+	Function ActivityFunction // 指定的函数
+	Comment  string           // 活动说明
+	URI      string           // 活动URI
+}
+
+// ActivityTaskRuntime    一个具体的Activity 运行时实例
+type ActivityTaskRuntime struct {
+	activity *WorkerActivity
+	data     *APIActivityTask
+}
 
 // ActivityWorker Worker for activity model
 type ActivityWorker struct {
-	skyflow      *SkyFlowClient
+	client       *Client
 	Repositories []*WorkerRepository
 	stop         bool
 	workerPool   *ants.PoolWithFunc
@@ -41,20 +60,14 @@ var WorkerStatus = struct {
 	Close:      "Close",
 }
 
-// ActivityTaskRuntime    一个具体的Activity 运营时实例
-type ActivityTaskRuntime struct {
-	activity *WorkerActivity
-	data     *APIActivityTask
-}
-
 // ActivityRunError  运行时错误类型
 var ActivityRunError = "ActivityRunError"
 
 // NewActivityWorker new activity worker
-func NewActivityWorker(client *SkyFlowClient, poolsize int, repos ...*WorkerRepository) (*ActivityWorker, error) {
+func NewActivityWorker(client *Client, poolsize int, repos ...*WorkerRepository) (*ActivityWorker, error) {
 	var err error
 	aw := ActivityWorker{
-		skyflow:      client,
+		client:       client,
 		Repositories: repos,
 		stop:         false,
 		status:       WorkerStatus.Init,
@@ -67,15 +80,19 @@ func NewActivityWorker(client *SkyFlowClient, poolsize int, repos ...*WorkerRepo
 	return &aw, nil
 }
 
-func (w *ActivityWorker) monitorActivity(act *WorkerActivity) {
+func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 
 	for {
 		if w.stop {
 			break
 		}
-		acttask, err := w.skyflow.GetActivityTask(act.URI)
+		acttask, err := w.client.GetClient().GetActivityTask(
+			context.Background(),
+			&v1.GetActivityTaskRequest{
+				ActivityUri: activity.URI,
+			})
 		if err != nil {
-			sferr, ok := err.(SkyFlowError)
+			sferr, ok := err.Error().(*v1.Error)
 			if !ok {
 				continue
 			}
@@ -86,7 +103,7 @@ func (w *ActivityWorker) monitorActivity(act *WorkerActivity) {
 		}
 
 		data := ActivityTaskRuntime{
-			activity: act,
+			activity: activity,
 			data:     &acttask,
 		}
 		err = w.workerPool.Invoke(data)
@@ -276,17 +293,6 @@ func (wr *WorkerRepository) ScanStateMachinePath() error {
 	}
 	return nil
 }
-
-// WorkerActivity Activity in worker
-type WorkerActivity struct {
-	Name     string           //  活动名称
-	Function ActivityFunction // 指定的函数
-	Comment  string           // 活动说明
-	URI      string           // 活动URI
-}
-
-// ActivityFunction activity callback function
-type ActivityFunction func(string, string, *SkyFlowClient) error
 
 // NewWorkerActivity New Worker Activity
 func NewWorkerActivity(name string, f ActivityFunction, comment string) *WorkerActivity {

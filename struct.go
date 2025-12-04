@@ -73,7 +73,7 @@ type APIExecutionEvent struct {
 
 // ListExecutionCondition API所需要的参数
 type ListExecutionCondition struct {
-	PageSzie        int    `json:"pageSize"`
+	PageSize        int    `json:"pageSize"`
 	PageNumber      int    `json:"pageNumber"`
 	Status          string `json:"status"`
 	StateMachineURI string `json:"stateMachineURI"`

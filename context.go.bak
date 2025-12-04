@@ -1,0 +1,70 @@
+package skyflowclient
+
+import (
+	"context"
+	"encoding/json"
+
+	v1 "github.com/skyflow-workflow/skyflow_backend/api/v1"
+)
+
+// Context Skyflow Worker Context
+// Context 上下文信息，用于传递给Activity 的参数
+type Context struct {
+	ctx    context.Context
+	Client *Client
+	Task   *ActivityTaskRuntime
+}
+
+// NewContext create a new context
+func NewContext(ctx context.Context, client *Client, task *ActivityTaskRuntime) *Context {
+	return &Context{
+		ctx:    ctx,
+		Client: client,
+		Task:   task,
+	}
+}
+
+func (ctx *Context) SendTaskFailure(httpctx context.Context, errorname string, cause string) error {
+	var err error
+	req := &v1.SendTaskFailureRequest{
+		TaskToken: ctx.Task.data.TaskToken,
+		Error:     errorname,
+		Cause:     cause,
+	}
+	_, err = ctx.Client.GetClient().SendTaskFailure(httpctx, req)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ctx *Context) SendTaskSuccess(httpctx context.Context, output interface{}) error {
+	var err error
+	var result []byte
+	result, err = json.Marshal(output)
+	if err != nil {
+		return err
+	}
+	req := &v1.SendTaskSuccessRequest{
+		TaskToken: ctx.Task.data.TaskToken,
+		Output:    string(result),
+	}
+	_, err = ctx.Client.GetClient().SendTaskSuccess(httpctx, req)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ctx *Context) SendTaskHeartbeat(httpctx context.Context, message string) error {
+	var err error
+	req := &v1.SendTaskHeartbeatRequest{
+		TaskToken: ctx.Task.data.TaskToken,
+		Message:   message,
+	}
+	_, err = ctx.Client.GetClient().SendTaskHeartbeat(httpctx, req)
+	if err != nil {
+		return err
+	}
+	return nil
+}
