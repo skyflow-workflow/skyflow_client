@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/go-kratos/kratos/v2/errors"
+	"github.com/go-playground/assert/v2"
 	apiV1 "github.com/skyflow-workflow/skyflow_backend/api/v1"
 )
 
@@ -48,9 +49,6 @@ func TestClient_GetActivityTask(t *testing.T) {
 	if err2.Code != 0 {
 		t.Fatalf("GetActivityTask failed: %v", err2)
 	}
-	if err != nil {
-		t.Fatalf("GetActivityTask failed: %v", err)
-	}
 	t.Logf("GetActivityTask response: %v", resp)
 }
 
@@ -84,4 +82,17 @@ func TestClient_ListStateMachines(t *testing.T) {
 		t.Fatalf("ListStateMachines failed: %v", err)
 	}
 	t.Logf("ListStateMachines response: %v", resp)
+}
+
+func TestClient_CreateNamespace(t *testing.T) {
+	ctx := context.Background()
+	req := &apiV1.CreateNamespaceRequest{
+		Name:        "unittest",
+		Description: "unittest description",
+	}
+
+	resp, err := skyflow_client.CreateOrUpdateNamespace(ctx, req)
+	assert.Equal(t, err, nil)
+	assert.Equal(t, resp.Name, "unittest")
+
 }

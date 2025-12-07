@@ -5,7 +5,7 @@
     "States": {
         "S1": {
             "Type": "Task",
-            "Resource": "activity:testrepo/add",
+            "Resource": "activity:unittest/add",
             "ResultPath": "$.z",
             "Next": "S2"
         },
@@ -15,7 +15,7 @@
                 "x.$": "$.x",
                 "y.$": "$.z"
             },
-            "Resource": "activity:testrepo/add",
+            "Resource": "activity:unittest/add",
             "End": true
         }
     }
