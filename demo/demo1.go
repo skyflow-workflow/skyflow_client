@@ -21,9 +21,9 @@ func main() {
 		skyflowclient.NewWorkerNamespace(
 			"unittest",
 			"",
-			[]string{"demo/testact3.json"},
+			[]string{"demo"},
 			skyflowclient.NewWorkerActivity("add", addActivity, addActivityDoc),
-			skyflowclient.NewWorkerActivity("checkresult", checkresult, checkresultDoc),
+			skyflowclient.NewWorkerActivity("sub", subActivity, checkresultDoc),
 		),
 	}
 	aw, err := skyflowclient.NewActivityWorker(client, 1000,
@@ -37,10 +37,10 @@ func main() {
 		slog.Error("Register error", "error", err)
 		return
 	}
-	statemachineUri := "statemachine:unittest/testact3"
+	statemachineUri := "statemachine:unittest/task_with_2_step"
 	input := map[string]int{
-		"x": 1,
-		"y": 3,
+		"a": 1,
+		"b": 3,
 	}
 
 	Execution, err := client.StartExecution(
@@ -59,6 +59,7 @@ func main() {
 	aw.Run()
 	// 等10s钟
 	time.Sleep(10 * time.Second)
+	select {}
 	// 停止worker
 	aw.Stop()
 }
@@ -94,6 +95,7 @@ func addActivity(ctx *skyflowclient.Context) error {
 
 	sum := inputdata.X + inputdata.Y
 
+	slog.Info("addActivity", "sum", sum)
 	err = ctx.SendTaskSuccess(sum)
 	return err
 }
@@ -104,7 +106,7 @@ check input
 输出:
 `
 
-func checkresult(ctx *skyflowclient.Context) error {
+func subActivity(ctx *skyflowclient.Context) error {
 	var err error
 
 	type InputFormat struct {
@@ -121,8 +123,13 @@ func checkresult(ctx *skyflowclient.Context) error {
 		return err
 	}
 
-	result := inputdata.X + inputdata.Y
+	result := inputdata.X - inputdata.Y
+	slog.Info("subActivity", "result", result)
 
+	if result < 0 {
+		err = ctx.SendTaskFailure("SubError", "sub is not allown")
+		return err
+	}
 	err = ctx.SendTaskSuccess(result)
 	return err
 }

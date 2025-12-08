@@ -1,0 +1,35 @@
+@hostname = 127.0.0.1
+@port = 8080
+@host = http://{{hostname}}:{{port}}
+@contentType = application/json
+
+
+### StartExecution
+POST  {{host}}/api/v1/StartExecution
+Content-Type: {{contentType}}
+
+{
+  "statemachine_uri": "statemachine:unittest/task_with_cache",
+  "input": "{\"a\":100, \"b\":200}",
+  "title": "add 100_200"
+}
+
+### StartExecution
+POST  {{host}}/api/v1/StartExecution
+Content-Type: {{contentType}}
+
+{
+  "statemachine_uri": "statemachine:unittest/task_with_cache",
+  "input": "{\"a\":100, \"b\":200}",
+  "title": "add_sub_100_200"
+}
+
+### StartExecution
+POST  {{host}}/api/v1/StartExecution
+Content-Type: {{contentType}}
+
+{
+  "statemachine_uri": "statemachine:unittest/task_with_cache",
+  "input": "{\"a\":200, \"b\":100}",
+  "title": "add_sub_100_200"
+}
