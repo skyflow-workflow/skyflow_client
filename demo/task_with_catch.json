@@ -39,6 +39,7 @@
                 "y.$": "$.a"
             },
             "ResultPath": "$.z2",
+            "OutputPath": "$",
             "End": true
         }
     }

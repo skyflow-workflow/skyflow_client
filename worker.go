@@ -107,7 +107,7 @@ func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 			kerr := errors.FromError(err)
 
 			// if error code is ActivityNotFound, then sleep
-			if kerr.Code == int32(pbv1.ErrorCode_ActivityNotFound) {
+			if kerr.Code == int32(pbv1.ErrorCode_ACTIVITY_NOT_FOUND) {
 				time.Sleep(w.PollInterval)
 				continue
 			}

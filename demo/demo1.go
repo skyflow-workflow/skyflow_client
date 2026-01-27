@@ -11,7 +11,8 @@ import (
 func main() {
 
 	var err error
-	address := "http://127.0.0.1:8080/"
+	// address := "http://127.0.0.1:8080/"
+	address := "http://t1-skyflow.shizhuang-inc.net/"
 	client, err := skyflowclient.NewClient(address)
 	if err != nil {
 		slog.Error("NewClient error", "error", err)
@@ -23,7 +24,7 @@ func main() {
 			"",
 			[]string{"demo"},
 			skyflowclient.NewWorkerActivity("add", addActivity, addActivityDoc),
-			skyflowclient.NewWorkerActivity("sub", subActivity, checkresultDoc),
+			skyflowclient.NewWorkerActivity("sub", subActivity, subActivityDoc),
 		),
 	}
 	aw, err := skyflowclient.NewActivityWorker(client, 1000,
@@ -37,6 +38,23 @@ func main() {
 		slog.Error("Register error", "error", err)
 		return
 	}
+
+	// err = create_demo_execution(client)
+	// if err != nil {
+	// 	slog.Error("create_demo_execution error", "error", err)
+	// 	return
+	// }
+	// 启动worker
+	aw.Run()
+	// 等10s钟
+	time.Sleep(10 * time.Second)
+	select {}
+	// 停止worker
+	aw.Stop()
+}
+
+func create_demo_execution(client *skyflowclient.Client) error {
+	var err error
 	statemachineUri := "statemachine:unittest/task_with_2_step"
 	input := map[string]int{
 		"a": 1,
@@ -52,28 +70,21 @@ func main() {
 		})
 	if err != nil {
 		slog.Error("StartExecution error", "error", err)
-		return
+		return err
 	}
 	slog.Info("StartExecution success", "Execution", Execution)
-	// 启动worker
-	aw.Run()
-	// 等10s钟
-	time.Sleep(10 * time.Second)
-	select {}
-	// 停止worker
-	aw.Stop()
+	return nil
 }
 
 var addActivityDoc = `
 add 计算两个数的和
-输入:
+input:
 	{
 		"x" : 1,
 		"y" : 2
 	}
-输出:
-
-3
+output:
+	3
 
 `
 
@@ -100,10 +111,20 @@ func addActivity(ctx *skyflowclient.Context) error {
 	return err
 }
 
-var checkresultDoc = `
-check input
-输入:
-输出:
+var subActivityDoc = `
+sub 计算两个数的差
+input:
+	{
+		"x" : 1,
+		"y" : 2
+	}
+output:
+	{
+		"result" : 1
+	}
+
+error:
+	SubError: 差小于0
 `
 
 func subActivity(ctx *skyflowclient.Context) error {
@@ -112,6 +133,10 @@ func subActivity(ctx *skyflowclient.Context) error {
 	type InputFormat struct {
 		X int `json:"x"`
 		Y int `json:"y"`
+	}
+
+	type OutputFormat struct {
+		Result int `json:"result"`
 	}
 
 	var inputdata = InputFormat{
@@ -130,6 +155,11 @@ func subActivity(ctx *skyflowclient.Context) error {
 		err = ctx.SendTaskFailure("SubError", "sub is not allown")
 		return err
 	}
-	err = ctx.SendTaskSuccess(result)
+
+	var output = OutputFormat{
+		Result: result,
+	}
+
+	err = ctx.SendTaskSuccess(output)
 	return err
 }
