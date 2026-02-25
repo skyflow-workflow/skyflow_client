@@ -6,7 +6,7 @@ require (
 	github.com/go-kratos/kratos/v2 v2.9.1
 	github.com/go-playground/assert/v2 v2.2.0
 	github.com/panjf2000/ants/v2 v2.11.3
-	github.com/skyflow-workflow/skyflow_backend/api v0.1.1
+	github.com/skyflow-workflow/skyflow_backend/api v0.1.2
 )
 
 require (
