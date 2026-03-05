@@ -27,7 +27,7 @@ func NewContext(ctx context.Context, client *Client, task *ActivityTaskRuntime) 
 func (ctx *Context) SendTaskFailure(errorname string, cause string) error {
 	var err error
 	req := &v1.SendTaskFailureRequest{
-		TaskToken: ctx.Runtime.data.TaskToken,
+		TaskToken: ctx.Runtime.Data.TaskToken,
 		Error:     errorname,
 		Cause:     cause,
 	}
@@ -46,7 +46,7 @@ func (ctx *Context) SendTaskSuccess(output any) error {
 		return err
 	}
 	req := &v1.SendTaskSuccessRequest{
-		TaskToken: ctx.Runtime.data.TaskToken,
+		TaskToken: ctx.Runtime.Data.TaskToken,
 		Output:    string(result),
 	}
 	_, err = ctx.Client.GetClient().SendTaskSuccess(ctx.Context, req)
@@ -59,7 +59,7 @@ func (ctx *Context) SendTaskSuccess(output any) error {
 func (ctx *Context) SendTaskHeartbeat(message string) error {
 	var err error
 	req := &v1.SendTaskHeartbeatRequest{
-		TaskToken: ctx.Runtime.data.TaskToken,
+		TaskToken: ctx.Runtime.Data.TaskToken,
 		Message:   message,
 	}
 	_, err = ctx.Client.GetClient().SendTaskHeartbeat(ctx.Context, req)
@@ -71,7 +71,7 @@ func (ctx *Context) SendTaskHeartbeat(message string) error {
 
 func (ctx *Context) UnmarshalInput(v interface{}) error {
 	var err error
-	data := ctx.Runtime.data.Input
+	data := ctx.Runtime.Data.Input
 	err = json.Unmarshal([]byte(data), v)
 	if err != nil {
 		return err

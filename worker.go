@@ -31,8 +31,8 @@ type WorkerActivity struct {
 
 // ActivityTaskRuntime    一个具体的Activity 运行时实例
 type ActivityTaskRuntime struct {
-	activity *WorkerActivity
-	data     *pbv1.GetActivityTaskResponse
+	Activity *WorkerActivity
+	Data     *pbv1.GetActivityTaskResponse
 }
 
 // ActivityWorker Worker for activity model
@@ -117,8 +117,8 @@ func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 		}
 
 		data := ActivityTaskRuntime{
-			activity: activity,
-			data:     GetActivitiesTaskResp,
+			Activity: activity,
+			Data:     GetActivitiesTaskResp,
 		}
 		err = w.workerPool.Invoke(data)
 		if err != nil {
@@ -137,7 +137,7 @@ func (w *ActivityWorker) runActivity(i interface{}) {
 	if !ok {
 		return
 	}
-	var token = actrun.data.TaskToken
+	var token = actrun.Data.TaskToken
 	defer func() {
 
 		var r = recover()
@@ -157,7 +157,7 @@ func (w *ActivityWorker) runActivity(i interface{}) {
 
 	ctx := NewContext(context.Background(), w.client, &actrun)
 
-	err = actrun.activity.Function(ctx)
+	err = actrun.Activity.Function(ctx)
 	if err != nil {
 		err = ctx.SendTaskFailure(ActivityRunError, err.Error())
 		slog.ErrorContext(ctx.Context, "send task failure error", "error", err)
