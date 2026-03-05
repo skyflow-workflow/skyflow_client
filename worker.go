@@ -1,26 +1,51 @@
 package skyflowclient
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io/ioutil"
+	"log/slog"
 	"os"
 	"path"
-	"reflect"
 	"strings"
 	"time"
 
+	"github.com/go-kratos/kratos/v2/errors"
 	"github.com/panjf2000/ants/v2"
+	pbv1 "github.com/skyflow-workflow/skyflow_backend/api/v1"
 )
+
+var DefaultGetActivityTaskTimeout = 10 * time.Second
+var DefaultPollInterval = 200 * time.Millisecond
+var DefaultPollErrorInterval = 1 * time.Second
+
+// ActivityFunction activity callback function
+type ActivityFunction func(ctx *Context) error
+
+// WorkerActivity Activity in worker
+type WorkerActivity struct {
+	Name        string           //  活动名称
+	Function    ActivityFunction // 指定的函数
+	Description string           // 活动说明
+	URI         string           // 活动URI
+}
+
+// ActivityTaskRuntime    一个具体的Activity 运行时实例
+type ActivityTaskRuntime struct {
+	Activity *WorkerActivity
+	Data     *pbv1.GetActivityTaskResponse
+}
 
 // ActivityWorker Worker for activity model
 type ActivityWorker struct {
-	skyflow      *SkyFlowClient
-	Repositories []*WorkerRepository
-	stop         bool
-	workerPool   *ants.PoolWithFunc
-	poolsize     int
-	status       WorkerStatusType //worker的状态
+	client                 *Client
+	Namespaces             []*WorkerNamespace
+	stop                   bool
+	workerPool             *ants.PoolWithFunc
+	poolsize               int
+	status                 WorkerStatusType //worker的状态
+	GetActivityTaskTimeout time.Duration    // 获取活动任务超时时间
+	PollInterval           time.Duration    // 正常轮询间隔
+	PollErrorInterval      time.Duration    //轮询错误间隔
 }
 
 // WorkerStatusType  worker 状态类型
@@ -42,23 +67,21 @@ var WorkerStatus = struct {
 	Close:      "Close",
 }
 
-// ActivityTaskRuntime    一个具体的Activity 运营时实例
-type ActivityTaskRuntime struct {
-	activity *WorkerActivity
-	data     *APIActivityTask
-}
-
 // ActivityRunError  运行时错误类型
 var ActivityRunError = "ActivityRunError"
 
 // NewActivityWorker new activity worker
-func NewActivityWorker(client *SkyFlowClient, poolsize int, repos ...*WorkerRepository) (*ActivityWorker, error) {
+func NewActivityWorker(client *Client, poolsize int, namespaces ...*WorkerNamespace) (*ActivityWorker, error) {
 	var err error
 	aw := ActivityWorker{
-		skyflow:      client,
-		Repositories: repos,
-		stop:         false,
-		status:       WorkerStatus.Init,
+		client:                 client,
+		Namespaces:             namespaces,
+		stop:                   false,
+		status:                 WorkerStatus.Init,
+		poolsize:               poolsize,
+		GetActivityTaskTimeout: DefaultGetActivityTaskTimeout,
+		PollInterval:           DefaultPollInterval,
+		PollErrorInterval:      DefaultPollErrorInterval,
 	}
 	workerPool, err := ants.NewPoolWithFunc(poolsize, aw.runActivity)
 	if err != nil {
@@ -68,27 +91,34 @@ func NewActivityWorker(client *SkyFlowClient, poolsize int, repos ...*WorkerRepo
 	return &aw, nil
 }
 
-func (w *ActivityWorker) monitorActivity(act *WorkerActivity) {
+func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 
 	for {
 		if w.stop {
 			break
 		}
-		acttask, err := w.skyflow.GetActivityTask(act.URI)
+		GetActivitiesTaskResp, err := w.client.GetActivityTask(
+			context.Background(),
+			&pbv1.GetActivityTaskRequest{
+				ActivityUri: activity.URI,
+			})
 		if err != nil {
-			sferr, ok := err.(SkyFlowError)
-			if !ok {
+			// transport error to kratos error
+			kerr := errors.FromError(err)
+
+			// if error code is ActivityNotFound, then sleep
+			if kerr.Code == int32(pbv1.ErrorCode_ACTIVITY_NOT_FOUND) {
+				time.Sleep(w.PollInterval)
 				continue
 			}
-			if sferr.ErrorCode == SkyFlowErrorCode.ActivityTaskNotFound {
-				time.Sleep(1 * time.Second)
-				continue
-			}
+			// other error, then sleep
+			time.Sleep(w.PollErrorInterval)
+			continue
 		}
 
 		data := ActivityTaskRuntime{
-			activity: act,
-			data:     &acttask,
+			Activity: activity,
+			Data:     GetActivitiesTaskResp,
 		}
 		err = w.workerPool.Invoke(data)
 		if err != nil {
@@ -107,25 +137,31 @@ func (w *ActivityWorker) runActivity(i interface{}) {
 	if !ok {
 		return
 	}
-	var token = actrun.data.TaskToken
+	var token = actrun.Data.TaskToken
 	defer func() {
 
 		var r = recover()
 		if r != nil {
 			message := fmt.Sprint(r)
-			err = w.skyflow.SendTaskFailure(token, ActivityRunError, message)
+			err = w.client.SendTaskFailure(context.Background(), &pbv1.SendTaskFailureRequest{
+				TaskToken: token,
+				Error:     ActivityRunError,
+				Cause:     message,
+			})
 			if err != nil {
-				fmt.Println(err.Error())
+				slog.ErrorContext(context.Background(), "send task failure error", "error", err)
 				return
 			}
 		}
 	}()
-	err = actrun.activity.Function(actrun.data.Input, actrun.data.TaskToken, w.skyflow)
-	if err != nil {
-		fmt.Println(err.Error())
-		panic(err)
-	}
 
+	ctx := NewContext(context.Background(), w.client, &actrun)
+
+	err = actrun.Activity.Function(ctx)
+	if err != nil {
+		err = ctx.SendTaskFailure(ActivityRunError, err.Error())
+		slog.ErrorContext(ctx.Context, "send task failure error", "error", err)
+	}
 }
 
 // Run  Start Monitor skyflow and execute function when need
@@ -136,8 +172,8 @@ func (w *ActivityWorker) Run() error {
 		return err
 	}
 
-	for _, repo := range w.Repositories {
-		for _, act := range repo.Activities {
+	for _, ns := range w.Namespaces {
+		for _, act := range ns.Activities {
 			go w.monitorActivity(act)
 		}
 	}
@@ -145,30 +181,46 @@ func (w *ActivityWorker) Run() error {
 	return nil
 }
 
-// Register register statemachine / activitys to skyflow server
+// Register register statemachine / activities to skyflow server
 func (w *ActivityWorker) Register() error {
 
 	var err error
-	fmt.Printf("Register Worker,  Skyflow API Version : %s\n", v)
-
-	for _, repo := range w.Repositories {
-		err = repo.ScanStateMachinePath()
+	for _, ns := range w.Namespaces {
+		err = ns.ScanStateMachinePath()
 		if err != nil {
 			return err
 		}
-		err = w.skyflow.CreateRepository(repo.Name)
+		_, err = w.client.CreateOrUpdateNamespace(
+			context.Background(),
+			&pbv1.CreateNamespaceRequest{
+				Name:        ns.Name,
+				Description: ns.Description,
+			})
 		if err != nil {
 			return err
 		}
-		for _, act := range repo.Activities {
-			apiact, err := w.skyflow.CreateActivity(repo.Name, act.Name, act.Comment)
+		for _, act := range ns.Activities {
+			activity, err := w.client.CreateOrUpdateActivity(
+				context.Background(),
+				&pbv1.CreateActivityRequest{
+					Namespace:   ns.Name,
+					Name:        act.Name,
+					Description: act.Description,
+				})
 			if err != nil {
 				return err
 			}
-			act.URI = apiact.URI
+			act.URI = activity.ActivityUri
 		}
-		for name, content := range repo.StateMachines {
-			_, err = w.skyflow.CreateStateMachine(repo.Name, name, content, "")
+		for name, content := range ns.StateMachines {
+			_, err = w.client.CreateOrUpdateStateMachine(
+				context.Background(),
+				&pbv1.CreateStateMachineRequest{
+					Namespace:   ns.Name,
+					Name:        name,
+					Description: "statemachine from file",
+					Definition:  content,
+				})
 			if err != nil {
 				return err
 			}
@@ -200,35 +252,37 @@ func (w *ActivityWorker) Status() WorkerStatusType {
 type ResourceWorker struct {
 }
 
-// WorkerRepository  repository in worker
-type WorkerRepository struct {
+// WorkerNamespace  repository in worker
+type WorkerNamespace struct {
 	Name              string
+	Description       string
 	Activities        []*WorkerActivity
 	StateMachinePaths []string
 	StateMachines     map[string]string
 }
 
-// NewWorkerRepository New worker Repository
-func NewWorkerRepository(name string, statmachinepaths []string, acts ...*WorkerActivity) *WorkerRepository {
+// NewWorkerNamespace New worker namespace
+func NewWorkerNamespace(name string, description string, paths []string,
+	activities ...*WorkerActivity) *WorkerNamespace {
 
-	wr := WorkerRepository{
+	wr := WorkerNamespace{
 		Name:              name,
-		Activities:        acts,
-		StateMachinePaths: statmachinepaths,
+		Activities:        activities,
+		StateMachinePaths: paths,
 		StateMachines:     map[string]string{},
 	}
 	return &wr
 }
 
 // ScanStateMachinePath  add statemachine search path
-func (wr *WorkerRepository) ScanStateMachinePath() error {
+func (wr *WorkerNamespace) ScanStateMachinePath() error {
 
 	for _, p := range wr.StateMachinePaths {
-		finfo, err := os.Stat(p)
+		fileInfo, err := os.Stat(p)
 		if err != nil {
 			return err
 		}
-		if finfo.IsDir() {
+		if fileInfo.IsDir() {
 			// 扫描目录
 			fileinfos, err := os.ReadDir(p)
 			if err != nil {
@@ -238,165 +292,52 @@ func (wr *WorkerRepository) ScanStateMachinePath() error {
 			for _, fi := range fileinfos {
 				fmt.Println(fi.Name())
 				if !fi.IsDir() {
-					finame := fi.Name()
-					fnamepart := strings.SplitN(strings.TrimSpace(finame), ".", 2)
-					if len(fnamepart) < 2 {
+					fileName := fi.Name()
+					fileNamePart := strings.SplitN(strings.TrimSpace(fileName), ".", 2)
+					if len(fileNamePart) < 2 {
 						continue
 					}
-					fname := fnamepart[0]
-					fext := fnamepart[1]
-					if fext == "json" {
-						fullfilename := path.Join(p, finame)
+					fName := fileNamePart[0]
+					fExt := fileNamePart[1]
+					if fExt == "json" {
+						fullfilename := path.Join(p, fileName)
 						content, err := os.ReadFile(fullfilename)
 						if err != nil {
 							return err
 						}
-						wr.StateMachines[fname] = string(content)
+						wr.StateMachines[fName] = string(content)
 					}
 				}
 			}
 		} else {
 			// 处理文件
-			finame := finfo.Name()
-			fnamepart := strings.SplitN(strings.TrimSpace(finame), ".", 2)
-			if len(fnamepart) < 2 || fnamepart[1] != "json" {
+			fileName := fileInfo.Name()
+			fNamePart := strings.SplitN(strings.TrimSpace(fileName), ".", 2)
+			if len(fNamePart) < 2 || fNamePart[1] != "json" {
 				err = fmt.Errorf("StateMachine Path [ %s ] file name  should like  xx.json ", p)
 				return err
 			}
-			fname := fnamepart[0]
-			fext := fnamepart[1]
-			if fext == "json" {
-				content, err := ioutil.ReadFile(p)
+			fName := fNamePart[0]
+			fExt := fNamePart[1]
+			if fExt == "json" {
+				content, err := os.ReadFile(p)
 				if err != nil {
 					return err
 				}
-				wr.StateMachines[fname] = string(content)
+				wr.StateMachines[fName] = string(content)
 			}
 
 		}
 	}
 	return nil
 }
-
-// WorkerActivity Activity in worker
-type WorkerActivity struct {
-	Name     string           //  活动名称
-	Function ActivityFunction // 指定的函数
-	Comment  string           // 活动说明
-	URI      string           // 活动URI
-}
-
-// ActivityFunction activity callback function
-type ActivityFunction func(string, string, *SkyFlowClient) error
 
 // NewWorkerActivity New Worker Activity
 func NewWorkerActivity(name string, f ActivityFunction, comment string) *WorkerActivity {
 	wa := WorkerActivity{
-		Name:     name,
-		Function: f,
-		Comment:  comment,
+		Name:        name,
+		Function:    f,
+		Description: comment,
 	}
 	return &wa
-}
-
-// UnmarshalInput 解压传来的到特定的变量钟
-// @input  string ,要处理的输入的值
-// @v   interface, 要解压的目标数据结构，
-// v struct tag :   `json:"x", post:"notzero, required" `
-//
-//	notzero : 字段值非0值
-//	required: 字段值必需要有显式声明
-func UnmarshalInput(input string, v interface{}) error {
-	var err error
-	content := []byte(input)
-	err = json.Unmarshal(content, v)
-	if err != nil {
-		return err
-	}
-	var mapjson = map[string]interface{}{}
-	err = json.Unmarshal(content, &mapjson)
-	if err != nil {
-		return err
-	}
-
-	var isBlank = func(value reflect.Value) bool {
-		switch value.Kind() {
-		case reflect.String:
-			return value.Len() == 0
-		case reflect.Bool:
-			return !value.Bool()
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return value.Int() == 0
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-			return value.Uint() == 0
-		case reflect.Float32, reflect.Float64:
-			return value.Float() == 0
-		case reflect.Interface, reflect.Ptr:
-			return value.IsNil()
-		}
-		return reflect.DeepEqual(value.Interface(), reflect.Zero(value.Type()).Interface())
-	}
-
-	t := reflect.TypeOf(v).Elem()
-	val := reflect.ValueOf(v).Elem()
-	for i := 0; i < t.NumField(); i++ {
-		tag := t.Field(i).Tag.Get("post")
-
-		var key = t.Field(i).Tag.Get("json")
-		if key == "" {
-			key = t.Field(i).Name
-		}
-		rv := val.Field(i)
-
-		tagitems := strings.Fields(tag)
-		for _, titem := range tagitems {
-			switch titem {
-			case "required":
-				if _, ok := mapjson[key]; !ok {
-					message := MessageFormat.ArgumentRequired.Format(key)
-					err = fmt.Errorf(message)
-					return err
-				}
-			case "notzero":
-				if isBlank(rv) {
-					message := MessageFormat.ArgumentZero.Format(key)
-					err = fmt.Errorf(message)
-					return err
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// MessageTemplate 异常类型信息模板
-type MessageTemplate struct {
-	Template string
-}
-
-// Format  格式话异常信息
-func (mt MessageTemplate) Format(params ...interface{}) string {
-	msg := fmt.Sprintf(mt.Template, params)
-	return msg
-}
-
-// MessageFormat  消息类型与异常信息格式化映射
-var MessageFormat = struct {
-	ArgumentValueError MessageTemplate
-	ArgumentTypeError  MessageTemplate
-	ArgumentRequired   MessageTemplate
-	ArgumentZero       MessageTemplate
-}{
-	ArgumentValueError: MessageTemplate{
-		Template: "Argument '%s' Should Not Be '%s'",
-	},
-	ArgumentTypeError: MessageTemplate{
-		Template: "Argument '%s' Should  Be type '%s'",
-	},
-	ArgumentRequired: MessageTemplate{
-		Template: "Argument '%s' Required",
-	},
-	ArgumentZero: MessageTemplate{
-		Template: "Argument '%s' Should Not Be Zero Value",
-	},
 }
