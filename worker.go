@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-kratos/kratos/v2/errors"
@@ -37,15 +38,17 @@ type ActivityTaskRuntime struct {
 
 // ActivityWorker Worker for activity model
 type ActivityWorker struct {
-	client                 *Client
-	Namespaces             []*WorkerNamespace
-	stop                   bool
-	workerPool             *ants.PoolWithFunc
-	poolsize               int
-	status                 WorkerStatusType //worker的状态
-	GetActivityTaskTimeout time.Duration    // 获取活动任务超时时间
-	PollInterval           time.Duration    // 正常轮询间隔
-	PollErrorInterval      time.Duration    //轮询错误间隔
+	client                     *Client
+	Namespaces                 []*WorkerNamespace
+	stop                       bool
+	workerPool                 *ants.PoolWithFunc
+	poolsize                   int
+	status                     WorkerStatusType //worker的状态
+	logger                     atomic.Pointer[slog.Logger]
+	ignoreActivityTaskNotFound atomic.Bool
+	GetActivityTaskTimeout     time.Duration // 获取活动任务超时时间
+	PollInterval               time.Duration // 正常轮询间隔
+	PollErrorInterval          time.Duration //轮询错误间隔
 }
 
 // WorkerStatusType  worker 状态类型
@@ -91,6 +94,46 @@ func NewActivityWorker(client *Client, poolsize int, namespaces ...*WorkerNamesp
 	return &aw, nil
 }
 
+// WithLogger sets the logger used by this ActivityWorker instance. It mutates
+// the receiver and returns the same instance so calls can optionally be
+// chained. Passing nil resets the worker to slog.Default().
+func (w *ActivityWorker) WithLogger(logger *slog.Logger) *ActivityWorker {
+	w.logger.Store(logger)
+	return w
+}
+
+// WithIgnoreActivityTaskNotFound controls whether the expected
+// ACTIVITY_TASK_NOT_FOUND polling result is omitted from operation logs.
+// It mutates the receiver and returns the same instance so calls can
+// optionally be chained.
+func (w *ActivityWorker) WithIgnoreActivityTaskNotFound(ignore bool) *ActivityWorker {
+	w.ignoreActivityTaskNotFound.Store(ignore)
+	return w
+}
+
+func (w *ActivityWorker) activeLogger() *slog.Logger {
+	if logger := w.logger.Load(); logger != nil {
+		return logger
+	}
+	return slog.Default()
+}
+
+func (w *ActivityWorker) taskContext() context.Context {
+	ctx := withLoggerContext(context.Background(), w.activeLogger())
+	return withIgnoreActivityTaskNotFound(ctx, w.ignoreActivityTaskNotFound.Load())
+}
+
+func (w *ActivityWorker) getActivityTaskTimeoutSeconds() int32 {
+	seconds := int64(w.GetActivityTaskTimeout / time.Second)
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds > 120 {
+		return 120
+	}
+	return int32(seconds)
+}
+
 func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 
 	for {
@@ -98,16 +141,16 @@ func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 			break
 		}
 		GetActivitiesTaskResp, err := w.client.GetActivityTask(
-			context.Background(),
+			w.taskContext(),
 			&pbv1.GetActivityTaskRequest{
-				ActivityUri: activity.URI,
+				ActivityUri:    activity.URI,
+				TimeoutSeconds: w.getActivityTaskTimeoutSeconds(),
 			})
 		if err != nil {
-			// transport error to kratos error
-			kerr := errors.FromError(err)
-
-			// if error code is ActivityNotFound, then sleep
-			if kerr.Code == int32(pbv1.ErrorCode_ACTIVITY_NOT_FOUND) {
+			// ActivityNotFound and ActivityTaskNotFound are expected while
+			// polling. They use the normal poll interval instead of the error
+			// backoff interval.
+			if isActivityPollNotFound(err) {
 				time.Sleep(w.PollInterval)
 				continue
 			}
@@ -130,6 +173,12 @@ func (w *ActivityWorker) monitorActivity(activity *WorkerActivity) {
 
 }
 
+func isActivityPollNotFound(err error) bool {
+	kerr := errors.FromError(err)
+	return kerr.Code == int32(pbv1.ErrorCode_ACTIVITY_NOT_FOUND) ||
+		kerr.Code == int32(pbv1.ErrorCode_ACTIVITY_TASK_NOT_FOUND)
+}
+
 func (w *ActivityWorker) runActivity(i interface{}) {
 
 	var err error
@@ -138,29 +187,30 @@ func (w *ActivityWorker) runActivity(i interface{}) {
 		return
 	}
 	var token = actrun.Data.TaskToken
+	taskCtx := w.taskContext()
 	defer func() {
 
 		var r = recover()
 		if r != nil {
 			message := fmt.Sprint(r)
-			err = w.client.SendTaskFailure(context.Background(), &pbv1.SendTaskFailureRequest{
+			err = w.client.SendTaskFailure(taskCtx, &pbv1.SendTaskFailureRequest{
 				TaskToken: token,
 				Error:     ActivityRunError,
 				Cause:     message,
 			})
 			if err != nil {
-				slog.ErrorContext(context.Background(), "send task failure error", "error", err)
+				w.activeLogger().ErrorContext(taskCtx, "send task failure error", "error", err)
 				return
 			}
 		}
 	}()
 
-	ctx := NewContext(context.Background(), w.client, &actrun)
+	ctx := NewContext(taskCtx, w.client, &actrun)
 
 	err = actrun.Activity.Function(ctx)
 	if err != nil {
 		err = ctx.SendTaskFailure(ActivityRunError, err.Error())
-		slog.ErrorContext(ctx.Context, "send task failure error", "error", err)
+		w.activeLogger().ErrorContext(ctx.Context, "send task failure error", "error", err)
 	}
 }
 
