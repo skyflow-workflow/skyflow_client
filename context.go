@@ -25,23 +25,17 @@ func NewContext(ctx context.Context, client *Client, task *ActivityTaskRuntime) 
 }
 
 func (ctx *Context) SendTaskFailure(errorname string, cause string) error {
-	var err error
 	req := &v1.SendTaskFailureRequest{
 		TaskToken: ctx.Runtime.Data.TaskToken,
 		Error:     errorname,
 		Cause:     cause,
 	}
-	_, err = ctx.Client.GetClient().SendTaskFailure(ctx.Context, req)
-	if err != nil {
-		return err
-	}
-	return nil
+	return ctx.Client.SendTaskFailure(ctx.Context, req)
 }
 
 func (ctx *Context) SendTaskSuccess(output any) error {
-	var err error
 	var result []byte
-	result, err = json.Marshal(output)
+	result, err := json.Marshal(output)
 	if err != nil {
 		return err
 	}
@@ -49,24 +43,15 @@ func (ctx *Context) SendTaskSuccess(output any) error {
 		TaskToken: ctx.Runtime.Data.TaskToken,
 		Output:    string(result),
 	}
-	_, err = ctx.Client.GetClient().SendTaskSuccess(ctx.Context, req)
-	if err != nil {
-		return err
-	}
-	return nil
+	return ctx.Client.SendTaskSuccess(ctx.Context, req)
 }
 
 func (ctx *Context) SendTaskHeartbeat(message string) error {
-	var err error
 	req := &v1.SendTaskHeartbeatRequest{
 		TaskToken: ctx.Runtime.Data.TaskToken,
 		Message:   message,
 	}
-	_, err = ctx.Client.GetClient().SendTaskHeartbeat(ctx.Context, req)
-	if err != nil {
-		return err
-	}
-	return nil
+	return ctx.Client.SendTaskHeartbeat(ctx.Context, req)
 }
 
 func (ctx *Context) UnmarshalInput(v interface{}) error {

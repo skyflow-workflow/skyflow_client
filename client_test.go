@@ -2,25 +2,76 @@ package skyflowclient
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/go-kratos/kratos/v2/errors"
 	"github.com/go-playground/assert/v2"
 	apiV1 "github.com/skyflow-workflow/skyflow_backend/api/v1"
 )
 
+func TestClient_GetActivityTaskHonorsHTTPTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		time.Sleep(2100 * time.Millisecond)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"success":true,"error_code":"","return_code":0,"error_message":"","data":{"activity_uri":"activity:unittest/panic","task_token":"1234567890","input":"{}","timeout_seconds":0,"heartbeat_seconds":0}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, WithHTTPTimeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close()
+
+	resp, err := client.GetActivityTask(context.Background(), &apiV1.GetActivityTaskRequest{
+		ActivityUri: "activity:unittest/panic",
+	})
+	if err != nil {
+		t.Fatalf("GetActivityTask after 2.1s: %v", err)
+	}
+	if resp.GetTaskToken() != "1234567890" {
+		t.Fatalf("task token = %q", resp.GetTaskToken())
+	}
+}
+
+func TestNewClient_WithHTTPTimeout(t *testing.T) {
+	client, err := NewClient("http://127.0.0.1:8080", WithHTTPTimeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("NewClient with timeout: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestNewClient_InvalidHTTPTimeout(t *testing.T) {
+	if _, err := NewClient("http://127.0.0.1:8080", WithHTTPTimeout(0)); err == nil {
+		t.Fatal("expected error for zero HTTP timeout")
+	}
+}
+
 var skyflow_client *Client
 
 func TestMain(m *testing.M) {
 	var err error
-	skyflow_client, err = NewClient("http://127.0.0.1:8080")
+	skyflow_client, err = NewClient(skyflowTestAddress())
 	if err != nil {
 		panic(err)
 	}
 	// 运行测试
 	code := m.Run()
 	os.Exit(code)
+}
+
+func skyflowTestAddress() string {
+	if address := os.Getenv("SKYFLOW_TEST_SERVER"); address != "" {
+		return address
+	}
+	return "http://127.0.0.1:8080"
 }
 
 func TestClient_ConnectionIsNotNil(t *testing.T) {
@@ -32,7 +83,17 @@ func TestClient_ConnectionIsNotNil(t *testing.T) {
 	}
 	t.Log("Client connection test passed")
 }
+
+func requireSkyflowServer(t *testing.T) {
+	t.Helper()
+	if os.Getenv("SKYFLOW_TEST_SERVER") == "" {
+		t.Skip("set SKYFLOW_TEST_SERVER to run integration tests against a Skyflow server")
+	}
+}
+
 func TestClient_GetActivityTask(t *testing.T) {
+	requireSkyflowServer(t)
+
 	// Test that we can create context and basic request structures
 	ctx := context.Background()
 
@@ -53,6 +114,8 @@ func TestClient_GetActivityTask(t *testing.T) {
 }
 
 func TestClient_ListExecutions(t *testing.T) {
+	requireSkyflowServer(t)
+
 	ctx := context.Background()
 	req := &apiV1.ListExecutionsRequest{
 		StatemachineUri: "statemachine:unittest/add",
@@ -69,6 +132,8 @@ func TestClient_ListExecutions(t *testing.T) {
 }
 
 func TestClient_ListStateMachines(t *testing.T) {
+	requireSkyflowServer(t)
+
 	ctx := context.Background()
 	req := &apiV1.ListStateMachinesRequest{
 		Namespace: "unittest",
@@ -85,6 +150,8 @@ func TestClient_ListStateMachines(t *testing.T) {
 }
 
 func TestClient_CreateNamespace(t *testing.T) {
+	requireSkyflowServer(t)
+
 	ctx := context.Background()
 	req := &apiV1.CreateNamespaceRequest{
 		Name:        "unittest",
