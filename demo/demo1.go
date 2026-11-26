@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"log/slog"
-	"time"
+	"os"
+	"os/signal"
+	"syscall"
 
 	skyflowclient "github.com/skyflow-workflow/skyflow_client"
 )
@@ -46,11 +48,13 @@ func main() {
 	// }
 	// 启动worker
 	aw.Run()
-	// 等10s钟
-	time.Sleep(10 * time.Second)
-	select {}
-	// 停止worker
-	aw.Stop()
+	// 等待退出信号后停止 worker。
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+	if err := aw.Stop(); err != nil {
+		slog.Error("Stop worker error", "error", err)
+	}
 }
 
 func create_demo_execution(client *skyflowclient.Client) error {

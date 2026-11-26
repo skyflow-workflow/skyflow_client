@@ -13,7 +13,9 @@ func TestWorker(t *testing.T) {
 }
 
 func TestWorker_Register(t *testing.T) {
-	client, err := NewClient("http://127.0.0.1:8080")
+	requireSkyflowServer(t)
+
+	client, err := NewClient(skyflowTestAddress())
 	if err != nil {
 		slog.Error("NewClient error", "error", err)
 		return
